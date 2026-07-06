@@ -1,5 +1,5 @@
 // ============================================================
-// Cokonet LMS 
+// Cokonet LMS - Phase 4 CI Pipeline
 // Checkout -> Build -> Unit Tests -> SonarQube -> Quality Gate
 // -> Trivy FS Scan -> Docker Build -> Trivy Image Scan -> Push
 // ============================================================
@@ -130,7 +130,7 @@ pipeline {
                 script {
                     services.each { svc ->
                         sh """
-                            docker build -t ${DOCKERHUB_NAMESPACE}/lms-${svc}:${IMAGE_TAG} \
+                            docker build --pull -t ${DOCKERHUB_NAMESPACE}/lms-${svc}:${IMAGE_TAG} \
                                          -t ${DOCKERHUB_NAMESPACE}/lms-${svc}:latest \
                                          ${APP_DIR}/${svc}
                         """
@@ -170,6 +170,42 @@ pipeline {
                     }
                 }
                 sh 'docker logout'
+            }
+        }
+
+        // ---------------- Phase 5 ----------------
+        stage('Deploy to Dev') {
+            steps {
+                dir("${APP_DIR}") {
+                    sh """
+                        cat > .env.dev <<EOF
+DOCKERHUB_NAMESPACE=${DOCKERHUB_NAMESPACE}
+IMAGE_TAG=${IMAGE_TAG}
+EOF
+                        docker compose -f docker-compose.dev.yml --env-file .env.dev pull
+                        docker compose -f docker-compose.dev.yml --env-file .env.dev up -d
+                    """
+                }
+            }
+        }
+
+        stage('Dev Smoke Check') {
+            // A minimal check just to catch an obviously broken deploy now;
+            // Phase 8 will replace/extend this with a proper readiness-probe
+            // and health-endpoint verification stage.
+            steps {
+                sh '''
+                    for i in $(seq 1 10); do
+                        if curl -sf http://localhost:5000/health > /dev/null; then
+                            echo "Backend healthy"
+                            exit 0
+                        fi
+                        echo "Waiting for backend to become healthy..."
+                        sleep 5
+                    done
+                    echo "Backend did not become healthy in time"
+                    exit 1
+                '''
             }
         }
     }

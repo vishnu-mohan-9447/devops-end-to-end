@@ -6,6 +6,11 @@ FROM nginx:1.27-alpine
 LABEL tier="presentation" \
       app="lms-platform"
 
+# Pull in the latest patched Alpine packages at build time (e.g. OpenSSL
+# security fixes) rather than depending on how recently nginx:1.27-alpine
+# itself was republished upstream.
+RUN apk update && apk upgrade --no-cache
+
 # Remove default nginx config and site content
 RUN rm -rf /usr/share/nginx/html/* /etc/nginx/conf.d/default.conf
 
