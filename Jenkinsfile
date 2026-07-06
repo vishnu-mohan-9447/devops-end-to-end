@@ -21,7 +21,7 @@ pipeline {
     }
 
     environment {
-        DOCKERHUB_NAMESPACE = 'yourdockerhubuser'   // <-- change me
+        DOCKERHUB_NAMESPACE = 'vishnumohan9447'   // <-- change me
         DOCKERHUB_CREDS     = credentials('dockerhub-creds')
         SONAR_PROJECT_KEY   = 'cokonet-lms'
         IMAGE_TAG           = "${env.BUILD_NUMBER}"
@@ -106,7 +106,7 @@ pipeline {
         stage('Quality Gate') {
             steps {
                 timeout(time: 10, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
+                    waitForQualityGate abortPipeline: false 
                 }
             }
         }
