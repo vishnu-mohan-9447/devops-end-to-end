@@ -1,0 +1,223 @@
+---
+- name: Ensure the apt keyrings directory exists
+  ansible.builtin.file:
+    path: /usr/share/keyrings
+    state: directory
+    mode: "0755"
+
+# Jenkins documents storing the armored key as-is (no gpg --dearmor). Dearmoring
+# into jenkins-keyring.asc makes apt's signed-by verification fail with NO_PUBKEY.
+- name: Install the Jenkins signing key
+  ansible.builtin.get_url:
+    url: https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key
+    dest: /usr/share/keyrings/jenkins-keyring.asc
+    mode: "0644"
+    force: true
+
+- name: Add Jenkins apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/jenkins.list
+    content: "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/\n"
+    mode: "0644"
+
+- name: Update apt cache after adding the Jenkins repo
+  ansible.builtin.apt:
+    update_cache: true
+  register: jenkins_apt_update
+  retries: 3
+  delay: 5
+  until: jenkins_apt_update is succeeded
+
+- name: Install Jenkins package
+  ansible.builtin.apt:
+    name: jenkins
+    state: present
+
+- name: Stop Jenkins while plugins and port are configured
+  ansible.builtin.systemd:
+    name: jenkins
+    state: stopped
+
+- name: Check whether plugins were already provisioned (idempotency marker)
+  ansible.builtin.stat:
+    path: "{{ jenkins_home }}/.plugins_provisioned"
+  register: plugins_marker
+
+- name: Copy plugin list to the host
+  ansible.builtin.copy:
+    src: plugins.txt
+    dest: /tmp/plugins.txt
+    mode: "0644"
+  when: not plugins_marker.stat.exists
+
+- name: Download the Jenkins plugin-installation-manager tool
+  ansible.builtin.get_url:
+    url: "https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/{{ jenkins_plugin_manager_version }}/jenkins-plugin-manager-{{ jenkins_plugin_manager_version }}.jar"
+    dest: "{{ jenkins_plugin_manager_jar }}"
+    mode: "0644"
+  when: not plugins_marker.stat.exists
+
+- name: Ensure Jenkins plugins directory exists
+  ansible.builtin.file:
+    path: "{{ jenkins_home }}/plugins"
+    state: directory
+    owner: jenkins
+    group: jenkins
+    mode: "0755"
+
+- name: Install plugins with the plugin manager tool (this can take a couple of minutes)
+  ansible.builtin.command: >
+    java -jar {{ jenkins_plugin_manager_jar }}
+    --war {{ jenkins_war_path }}
+    --plugin-file /tmp/plugins.txt
+    --plugin-download-directory {{ jenkins_home }}/plugins
+  when: not plugins_marker.stat.exists
+  register: jenkins_plugin_install
+  changed_when: jenkins_plugin_install.rc == 0
+
+- name: Fix ownership of the Jenkins plugins directory
+  ansible.builtin.file:
+    path: "{{ jenkins_home }}/plugins"
+    state: directory
+    owner: jenkins
+    group: jenkins
+    recurse: true
+
+- name: Mark plugins as provisioned
+  ansible.builtin.file:
+    path: "{{ jenkins_home }}/.plugins_provisioned"
+    state: touch
+    owner: jenkins
+    group: jenkins
+    mode: "0644"
+  when: not plugins_marker.stat.exists
+
+- name: Set Jenkins HTTP port
+  ansible.builtin.lineinfile:
+    path: /etc/default/jenkins
+    regexp: "^HTTP_PORT="
+    line: "HTTP_PORT={{ jenkins_http_port }}"
+
+- name: Ensure unzip is installed
+  ansible.builtin.apt:
+    name: unzip
+    state: present
+    update_cache: yes
+  become: true # Needs root privileges to install packages
+
+- name: Reload systemd after environment changes
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Start and enable Jenkins
+  ansible.builtin.systemd:
+    name: jenkins
+    state: started
+    enabled: true
+
+- name: Install Trivy
+  ansible.builtin.shell: |
+    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+  args:
+    creates: /usr/local/bin/trivy
+
+- name: Set virtual memory limits required by SonarQube (Elasticsearch)
+  ansible.builtin.sysctl:
+    name: vm.max_map_count
+    value: "524288"
+    state: present
+    reload: true
+  become: true
+
+- name: Create a dedicated system group for SonarQube
+  ansible.builtin.group:
+    name: sonar
+    state: present
+  become: true
+
+- name: Create a dedicated non-root system user for SonarQube
+  ansible.builtin.user:
+    name: sonar
+    group: sonar
+    system: true
+    shell: /bin/bash
+    home: /opt/sonarqube
+  become: true
+
+- name: Download SonarQube Server ZIP distribution
+  ansible.builtin.get_url:
+    url: "https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-10.7.0.96327.zip"
+    dest: /tmp/sonarqube-10.7.0.96327.zip
+    mode: "0644"
+    force: true
+  become: true
+
+- name: Unpack SonarQube Server ZIP distribution
+  ansible.builtin.unarchive:
+    src: /tmp/sonarqube-10.7.0.96327.zip
+    dest: /opt
+    remote_src: true
+    creates: /opt/sonarqube-10.7.0.96327
+  become: true
+
+- name: Check if /opt/sonarqube is a physical directory
+  ansible.builtin.stat:
+    path: /opt/sonarqube
+  register: sonar_dir
+
+- name: Remove physical directory if it blocks the symlink
+  ansible.builtin.file:
+    path: /opt/sonarqube
+    state: absent
+  become: true
+  when: sonar_dir.stat.exists and not sonar_dir.stat.islnk
+
+- name: Create a clean symlink to the active installation directory
+  ansible.builtin.file:
+    src: /opt/sonarqube-10.7.0.96327
+    dest: /opt/sonarqube
+    state: link
+  become: true
+
+- name: Set recursive directory ownership permissions for the sonar user
+  ansible.builtin.file:
+    path: /opt/sonarqube-10.7.0.96327
+    owner: sonar
+    group: sonar
+    recurse: true
+  become: true
+
+- name: Create systemd initialization service unit for SonarQube
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/sonarqube.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=SonarQube service
+      After=syslog.target network.target
+
+      [Service]
+      Type=forking
+      ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
+      ExecStop=/opt/sonarqube/bin/linux-x86-64/sonar.sh stop
+      User=sonar
+      Group=sonar
+      Restart=on-failure
+      LimitNOFILE=65536
+      LimitNPROC=4096
+
+      [Install]
+      WantedBy=multi-user.target
+  become: true
+
+- name: Reload systemd daemon to pick up the new unit configuration
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+
+- name: Start and enable native SonarQube background service
+  ansible.builtin.systemd:
+    name: sonarqube
+    state: started
+    enabled: true
+  become: true

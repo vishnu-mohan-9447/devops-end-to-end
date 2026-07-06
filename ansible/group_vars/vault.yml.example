@@ -1,0 +1,12 @@
+# Copy this file to vault.yml, set a real password, then encrypt it:
+#
+#   cp group_vars/vault.yml.example group_vars/vault.yml
+#   ansible-vault encrypt group_vars/vault.yml
+#
+# Run the playbook with:
+#   ansible-playbook -i inventory/hosts.ini site.yml --ask-vault-pass
+# or store the vault password in a file and use --vault-password-file
+#
+# NEVER commit an unencrypted vault.yml to git.
+
+vault_jenkins_admin_password: "ChangeThisStrongPassword123!"

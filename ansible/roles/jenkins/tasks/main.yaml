@@ -1,0 +1,130 @@
+---
+- name: Ensure the apt keyrings directory exists
+  ansible.builtin.file:
+    path: /usr/share/keyrings
+    state: directory
+    mode: "0755"
+
+# Jenkins documents storing the armored key as-is (no gpg --dearmor). Dearmoring
+# into jenkins-keyring.asc makes apt's signed-by verification fail with NO_PUBKEY.
+- name: Install the Jenkins signing key
+  ansible.builtin.get_url:
+    url: https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key
+    dest: /usr/share/keyrings/jenkins-keyring.asc
+    mode: "0644"
+    force: true
+
+- name: Add Jenkins apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/jenkins.list
+    content: "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/\n"
+    mode: "0644"
+
+- name: Update apt cache after adding the Jenkins repo
+  ansible.builtin.apt:
+    update_cache: true
+  register: jenkins_apt_update
+  retries: 3
+  delay: 5
+  until: jenkins_apt_update is succeeded
+
+- name: Install Jenkins package
+  ansible.builtin.apt:
+    name: jenkins
+    state: present
+
+- name: Stop Jenkins while plugins and port are configured
+  ansible.builtin.systemd:
+    name: jenkins
+    state: stopped
+
+- name: Check whether plugins were already provisioned (idempotency marker)
+  ansible.builtin.stat:
+    path: "{{ jenkins_home }}/.plugins_provisioned"
+  register: plugins_marker
+
+- name: Copy plugin list to the host
+  ansible.builtin.copy:
+    src: plugins.txt
+    dest: /tmp/plugins.txt
+    mode: "0644"
+  when: not plugins_marker.stat.exists
+
+- name: Download the Jenkins plugin-installation-manager tool
+  ansible.builtin.get_url:
+    url: "https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/{{ jenkins_plugin_manager_version }}/jenkins-plugin-manager-{{ jenkins_plugin_manager_version }}.jar"
+    dest: "{{ jenkins_plugin_manager_jar }}"
+    mode: "0644"
+  when: not plugins_marker.stat.exists
+
+- name: Ensure Jenkins plugins directory exists
+  ansible.builtin.file:
+    path: "{{ jenkins_home }}/plugins"
+    state: directory
+    owner: jenkins
+    group: jenkins
+    mode: "0755"
+
+- name: Install plugins with the plugin manager tool (this can take a couple of minutes)
+  ansible.builtin.command: >
+    java -jar {{ jenkins_plugin_manager_jar }}
+    --war {{ jenkins_war_path }}
+    --plugin-file /tmp/plugins.txt
+    --plugin-download-directory {{ jenkins_home }}/plugins
+  when: not plugins_marker.stat.exists
+  register: jenkins_plugin_install
+  changed_when: jenkins_plugin_install.rc == 0
+
+- name: Fix ownership of the Jenkins plugins directory
+  ansible.builtin.file:
+    path: "{{ jenkins_home }}/plugins"
+    state: directory
+    owner: jenkins
+    group: jenkins
+    recurse: true
+
+- name: Mark plugins as provisioned
+  ansible.builtin.file:
+    path: "{{ jenkins_home }}/.plugins_provisioned"
+    state: touch
+    owner: jenkins
+    group: jenkins
+    mode: "0644"
+  when: not plugins_marker.stat.exists
+
+- name: Set Jenkins HTTP port
+  ansible.builtin.lineinfile:
+    path: /etc/default/jenkins
+    regexp: "^HTTP_PORT="
+    line: "HTTP_PORT={{ jenkins_http_port }}"
+
+- name: Ensure unzip is installed
+  ansible.builtin.apt:
+    name: unzip
+    state: present
+    update_cache: yes
+  become: true # Needs root privileges to install packages
+
+- name: Reload systemd after environment changes
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Start and enable Jenkins
+  ansible.builtin.systemd:
+    name: jenkins
+    state: started
+    enabled: true
+
+- name: Install Trivy
+  ansible.builtin.shell: |
+    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+  args:
+    creates: /usr/local/bin/trivy
+
+- name: Set virtual memory limits required by SonarQube (Elasticsearch)
+  ansible.builtin.sysctl:
+    name: vm.max_map_count
+    value: "524288"
+    state: present
+    reload: true
+  become: true

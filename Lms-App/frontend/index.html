@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>LMS | Course Catalog</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">CloudCampus LMS</div>
+    <nav id="nav-links"></nav>
+  </header>
+
+  <main>
+    <h2 style="margin-bottom:1rem;">Available courses</h2>
+    <div id="course-list">Loading courses...</div>
+  </main>
+
+  <footer>Presentation tier &middot; Nginx &middot; HTML/CSS/JS</footer>
+
+  <script src="js/api.js"></script>
+  <script src="js/main.js"></script>
+  <script>
+    async function loadCourses() {
+      const list = document.getElementById('course-list');
+      try {
+        const courses = await api.listCourses();
+        if (courses.length === 0) {
+          list.innerHTML = '<p>No courses available yet.</p>';
+          return;
+        }
+        list.innerHTML = courses.map(c => `
+          <div class="card">
+            <h3>${c.title}</h3>
+            <p>${c.description || ''}</p>
+            <a class="btn" href="course.html?id=${c.id}">View course</a>
+          </div>
+        `).join('');
+      } catch (err) {
+        list.innerHTML = `<div class="alert alert-error">Failed to load courses: ${err.message}</div>`;
+      }
+    }
+    loadCourses();
+  </script>
+</body>
+</html>

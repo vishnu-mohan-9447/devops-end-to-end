@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>LMS | Register</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">CloudCampus LMS</div>
+    <nav id="nav-links"></nav>
+  </header>
+
+  <main>
+    <div class="card">
+      <h3>Create an account</h3>
+      <div id="message"></div>
+      <form id="register-form">
+        <input type="text" id="name" placeholder="Full name" required />
+        <input type="email" id="email" placeholder="Email" required />
+        <input type="password" id="password" placeholder="Password" required minlength="6" />
+        <button type="submit" class="btn">Register</button>
+      </form>
+      <p style="margin-top:1rem;">Already have an account? <a href="login.html">Log in</a></p>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/main.js"></script>
+  <script>
+    document.getElementById('register-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('name').value;
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      const message = document.getElementById('message');
+      try {
+        const { user, token } = await api.register(name, email, password);
+        setToken(token);
+        setUser(user);
+        window.location.href = 'index.html';
+      } catch (err) {
+        message.innerHTML = `<div class="alert alert-error">${err.message}</div>`;
+      }
+    });
+  </script>
+</body>
+</html>

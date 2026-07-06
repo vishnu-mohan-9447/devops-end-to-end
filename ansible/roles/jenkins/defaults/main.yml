@@ -1,0 +1,6 @@
+---
+jenkins_http_port: 8081
+jenkins_home: /var/lib/jenkins
+jenkins_plugin_manager_version: "2.13.2"
+jenkins_plugin_manager_jar: /opt/jenkins-plugin-manager.jar
+jenkins_war_path: /usr/share/java/jenkins.war

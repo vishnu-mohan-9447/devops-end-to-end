@@ -1,0 +1,22 @@
+---
+- name: Configure Jenkins CI host (Docker, Java, Jenkins + plugins)
+  hosts: jenkins
+  become: true
+
+  # A partial Jenkins role run can leave a broken repo/key on the host. Docker and
+  # Java run apt update before Jenkins, so remove stale config up front.
+  pre_tasks:
+    - name: Remove Jenkins apt source left from a previous failed run
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/jenkins.list
+        state: absent
+
+    - name: Remove stale Jenkins keyring left from a previous failed run
+      ansible.builtin.file:
+        path: /usr/share/keyrings/jenkins-keyring.asc
+        state: absent
+
+  roles:
+    - docker
+    - java
+    - jenkins

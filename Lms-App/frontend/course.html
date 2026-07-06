@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>LMS | Course</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">CloudCampus LMS</div>
+    <nav id="nav-links"></nav>
+  </header>
+
+  <main>
+    <div id="course-content">Loading course...</div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/main.js"></script>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const courseId = params.get('id');
+
+    async function loadCourse() {
+      const container = document.getElementById('course-content');
+      if (!courseId) {
+        container.innerHTML = '<div class="alert alert-error">No course selected.</div>';
+        return;
+      }
+      try {
+        const course = await api.getCourse(courseId);
+        const isLoggedIn = !!getToken();
+
+        let modulesHtml = '';
+        for (const m of course.modules) {
+          modulesHtml += `
+            <div class="card">
+              <h3>${m.title}</h3>
+              <p>${m.content || ''}</p>
+              <div id="quiz-${m.id}" class="quiz-container"></div>
+            </div>
+          `;
+        }
+
+        container.innerHTML = `
+          <div class="card">
+            <h2>${course.title}</h2>
+            <p>${course.description || ''}</p>
+            ${isLoggedIn
+              ? '<button id="enroll-btn" class="btn" style="margin-top:0.75rem;">Enroll in this course</button>'
+              : '<p style="margin-top:0.75rem;"><a href="login.html">Log in</a> to enroll and take quizzes.</p>'}
+            <div id="enroll-message"></div>
+          </div>
+          ${modulesHtml}
+        `;
+
+        if (isLoggedIn) {
+          document.getElementById('enroll-btn').addEventListener('click', async () => {
+            const msg = document.getElementById('enroll-message');
+            try {
+              await api.enroll(courseId);
+              msg.innerHTML = '<div class="alert alert-success">Enrolled successfully.</div>';
+            } catch (err) {
+              msg.innerHTML = `<div class="alert alert-error">${err.message}</div>`;
+            }
+          });
+
+          for (const m of course.modules) {
+            loadQuiz(m.id);
+          }
+        }
+      } catch (err) {
+        container.innerHTML = `<div class="alert alert-error">Failed to load course: ${err.message}</div>`;
+      }
+    }
+
+    async function loadQuiz(moduleId) {
+      const quizzes = await api.getModuleQuiz(moduleId);
+      const target = document.getElementById(`quiz-${moduleId}`);
+      if (!quizzes.length) return;
+
+      target.innerHTML = quizzes.map(q => `
+        <div class="card" style="background:#f9fafb;">
+          <strong>${q.question}</strong>
+          <div id="options-${q.id}">
+            ${q.options.map((opt, idx) => `
+              <label class="quiz-option">
+                <input type="radio" name="quiz-${q.id}" value="${idx}" /> ${opt}
+              </label>
+            `).join('')}
+          </div>
+          <button class="btn" data-quiz-id="${q.id}" onclick="submitQuiz(${q.id})">Submit answer</button>
+          <div id="quiz-result-${q.id}"></div>
+        </div>
+      `).join('');
+    }
+
+    async function submitQuiz(quizId) {
+      const selected = document.querySelector(`input[name="quiz-${quizId}"]:checked`);
+      const resultDiv = document.getElementById(`quiz-result-${quizId}`);
+      if (!selected) {
+        resultDiv.innerHTML = '<div class="alert alert-error">Please select an answer.</div>';
+        return;
+      }
+      try {
+        const result = await api.submitQuiz(quizId, parseInt(selected.value, 10));
+        resultDiv.innerHTML = result.isCorrect
+          ? '<div class="alert alert-success">Correct!</div>'
+          : '<div class="alert alert-error">Not quite - try reviewing the module again.</div>';
+        if (result.certificateIssued) {
+          resultDiv.innerHTML += '<div class="alert alert-success">Course completed! Certificate issued - check your dashboard.</div>';
+        }
+      } catch (err) {
+        resultDiv.innerHTML = `<div class="alert alert-error">${err.message}</div>`;
+      }
+    }
+
+    loadCourse();
+  </script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+# Optional alternative to hosts.ini: queries AWS directly for the
+# Jenkins host by tag, so you never have to update an IP by hand,
+# even after terraform destroy/apply recreates the instance.
+#
+# Requires: pip install boto3 botocore, and the amazon.aws collection
+# (see requirements.yml). AWS credentials must be available in your
+# laptop's environment (aws configure / env vars / SSO).
+#
+# Usage:
+#   ansible-inventory -i inventory/aws_ec2.yml --graph
+#   ansible-playbook -i inventory/aws_ec2.yml site.yml
+
+plugin: amazon.aws.aws_ec2
+regions:
+  - us-east-1
+filters:
+  tag:Name: cloudcampus-lms-test-jenkins
+  instance-state-name: running
+hostnames:
+  - ip-address
+compose:
+  ansible_user: "'ubuntu'"
+  ansible_python_interpreter: "'/usr/bin/python3'"
+keyed_groups:
+  - key: tags.Name
+    prefix: tag

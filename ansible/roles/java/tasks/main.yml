@@ -1,0 +1,16 @@
+---
+- name: Install Java (required by Jenkins)
+  ansible.builtin.apt:
+    name: "{{ java_package }}"
+    state: present
+    update_cache: true
+
+- name: Check installed Java version
+  ansible.builtin.command: java -version
+  register: java_version_output
+  changed_when: false
+  failed_when: false
+
+- name: Show installed Java version
+  ansible.builtin.debug:
+    msg: "{{ java_version_output.stderr_lines }}"

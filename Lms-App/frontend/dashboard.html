@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>LMS | Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">CloudCampus LMS</div>
+    <nav id="nav-links"></nav>
+  </header>
+
+  <main>
+    <h2 style="margin-bottom:1rem;">My enrollments</h2>
+    <div id="enrollments">Loading...</div>
+
+    <h2 style="margin:2rem 0 1rem;">My certificates</h2>
+    <div id="certificates">Loading...</div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/main.js"></script>
+  <script>
+    requireAuth();
+
+    async function loadEnrollments() {
+      const el = document.getElementById('enrollments');
+      try {
+        const enrollments = await api.myEnrollments();
+        if (!enrollments.length) {
+          el.innerHTML = '<p>You are not enrolled in any courses yet.</p>';
+          return;
+        }
+        el.innerHTML = enrollments.map(e => `
+          <div class="card">
+            <h3>${e.title}</h3>
+            <p>${e.description || ''}</p>
+            <span class="badge ${e.status === 'completed' ? 'badge-success' : 'badge-pending'}">
+              ${e.status}
+            </span>
+          </div>
+        `).join('');
+      } catch (err) {
+        el.innerHTML = `<div class="alert alert-error">${err.message}</div>`;
+      }
+    }
+
+    async function loadCertificates() {
+      const el = document.getElementById('certificates');
+      try {
+        const certs = await api.myCertificates();
+        if (!certs.length) {
+          el.innerHTML = '<p>No certificates earned yet - complete a course to earn one.</p>';
+          return;
+        }
+        el.innerHTML = certs.map(c => `
+          <div class="card">
+            <h3>${c.course_title}</h3>
+            <p>Certificate code: <strong>${c.certificate_code}</strong></p>
+            <p>Issued: ${new Date(c.issued_at).toLocaleDateString()}</p>
+          </div>
+        `).join('');
+      } catch (err) {
+        el.innerHTML = `<div class="alert alert-error">${err.message}</div>`;
+      }
+    }
+
+    loadEnrollments();
+    loadCertificates();
+  </script>
+</body>
+</html>

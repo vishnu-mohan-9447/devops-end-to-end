@@ -1,0 +1,17 @@
+git
+workflow-aggregator
+pipeline-stage-view
+docker-workflow
+docker-plugin
+sonar
+credentials-binding
+ssh-agent
+github
+github-branch-source
+ansicolor
+timestamper
+ws-cleanup
+htmlpublisher
+kubernetes-cli
+blueocean
+configuration-as-code
