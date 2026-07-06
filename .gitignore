@@ -1,8 +1,4 @@
-**/.terraform/
 ansible/.venv/
-*.tfstate
-*.tfstate.*
-crash.log
 *.tfvars
 *.tfvars.json
 override.tf
@@ -10,3 +6,43 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
+# ---------------- Terraform ----------------
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# ---------------- Ansible ----------------
+ansible/inventory/hosts.ini
+ansible/group_vars/vault.yml
+*.retry
+
+# ---------------- Secrets / keys ----------------
+*.pem
+*.pfx
+.env
+!*.env.example
+
+# ---------------- Python (Ansible control node venv) ----------------
+.venv/
+__pycache__/
+*.pyc
+
+# ---------------- Node ----------------
+node_modules/
+npm-debug.log*
+
+# ---------------- Build / scan artifacts ----------------
+trivy-*.txt
+*.log
+
+# ---------------- OS / editor ----------------
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# ---------------- Misc ----------------
+*.tar.gz

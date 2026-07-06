@@ -54,6 +54,14 @@ resource "aws_security_group" "jenkins" {
     cidr_blocks = var.allowed_admin_cidrs
   }
 
+  ingress {
+    description = "SonarQube UI"
+    from_port   = 9000
+    to_port     = 9000
+    protocol    = "tcp"
+    cidr_blocks = var.allowed_admin_cidrs
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
