@@ -1,0 +1,12 @@
+# Trivy ignore list - every entry here must have a justification comment.
+# Review periodically; remove entries once the underlying image is patched
+# upstream and re-confirm by temporarily removing the line and re-scanning.
+
+# CVE-2025-68121 - Go stdlib crypto/tls (incorrect certificate validation
+# during TLS session resumption), found in the `gosu` binary bundled inside
+# the official postgres:16-alpine image (used internally by Postgres's
+# docker-entrypoint.sh to drop from root to the postgres user at container
+# startup). gosu never initiates or accepts a TLS connection - it has no
+# reachable attack surface for this CVE in our usage. Waiting on the
+# upstream postgres image to rebuild with a newer gosu (Go 1.24.13+/1.25.7+).
+CVE-2025-68121
