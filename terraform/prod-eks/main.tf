@@ -79,6 +79,160 @@ module "rds" {
   tags                        = var.tags
 }
 
+# ============================================================
+# OIDC provider - required for IRSA (IAM Roles for Service Accounts).
+# Without this, pods have no way to assume IAM roles at all; they'd
+# either get no AWS permissions or (worse) inherit the node's own IAM
+# role, which is far too broad.
+# ============================================================
+
+data "tls_certificate" "eks_oidc" {
+  url = module.eks.eks_cluster_oidc_issuer
+}
+
+resource "aws_iam_openid_connect_provider" "eks" {
+  url             = module.eks.eks_cluster_oidc_issuer
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.eks_oidc.certificates[0].sha1_fingerprint]
+
+  tags = var.tags
+}
+
+# ============================================================
+# IRSA role for external-secrets - scoped ONLY to the one RDS secret
+# it actually needs to read, not blanket secretsmanager:* access.
+# ============================================================
+
+data "aws_iam_policy_document" "external_secrets_assume_role" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub"
+      # Must match the namespace/ServiceAccount name the Helm release
+      # below actually creates - default chart values use this name,
+      # confirm with: kubectl get sa -n external-secrets
+      values = ["system:serviceaccount:external-secrets:external-secrets"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "external_secrets" {
+  name               = "${var.project_name}-${var.environment}-external-secrets"
+  assume_role_policy = data.aws_iam_policy_document.external_secrets_assume_role.json
+  tags               = var.tags
+}
+
+data "aws_iam_policy_document" "external_secrets_permissions" {
+  statement {
+    effect  = "Allow"
+    actions = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+    # Scoped to only the RDS master-user secret this project needs -
+    # add more resource ARNs here if you fetch other secrets later.
+    resources = [module.rds.db_master_user_secret_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "external_secrets" {
+  name   = "${var.project_name}-${var.environment}-external-secrets-policy"
+  role   = aws_iam_role.external_secrets.id
+  policy = data.aws_iam_policy_document.external_secrets_permissions.json
+}
+
+# ============================================================
+# Helm releases - ArgoCD, Ingress, cert-manager, External Secrets
+# Chart versions are pinned deliberately (never "latest") for
+# reproducibility. Verify they're still current before applying:
+#   helm search repo <repo>/<chart> --versions
+# ============================================================
+
+resource "helm_release" "argocd" {
+  name             = "argocd"
+  repository       = "https://argoproj.github.io/argo-helm"
+  chart            = "argo-cd"
+  version          = var.argocd_chart_version
+  namespace        = "argocd"
+  create_namespace = true
+
+  set {
+    name  = "server.service.type"
+    value = "ClusterIP" # exposed via the Ingress controller below, not a separate LB
+  }
+
+  depends_on = [module.eks]
+}
+
+resource "helm_release" "nginx_ingress" {
+  name             = "nginx-ingress"
+  repository       = "oci://ghcr.io/nginx/charts"
+  chart            = "nginx-ingress"
+  version          = var.nginx_ingress_chart_version
+  namespace        = "nginx-ingress"
+  create_namespace = true
+
+  # Defaults to the free NGINX Open Source image. Do NOT add
+  # controller.nginxplus / a private-registry.nginx.com image
+  # reference here - that switches to the paid NGINX Plus edition.
+  set {
+    name  = "controller.service.type"
+    value = "LoadBalancer"
+  }
+
+  depends_on = [module.eks]
+}
+
+resource "helm_release" "cert_manager" {
+  name             = "cert-manager"
+  repository       = "https://charts.jetstack.io"
+  chart            = "cert-manager"
+  version          = var.cert_manager_chart_version
+  namespace        = "cert-manager"
+  create_namespace = true
+
+  set {
+    name  = "crds.enabled"
+    value = "true"
+  }
+
+  depends_on = [module.eks]
+}
+
+resource "helm_release" "external_secrets" {
+  name             = "external-secrets"
+  repository       = "https://charts.external-secrets.io"
+  chart            = "external-secrets"
+  version          = var.external_secrets_chart_version
+  namespace        = "external-secrets"
+  create_namespace = true
+
+  set {
+    name  = "installCRDs"
+    value = "true"
+  }
+
+  # IRSA binding - lets the operator's pod assume external_secrets
+  # role above and actually call Secrets Manager.
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = aws_iam_role.external_secrets.arn
+  }
+
+  depends_on = [module.eks, aws_iam_role_policy.external_secrets]
+}
+
 # ---------------- Root-level outputs ----------------
 
 output "vpc_id" {
@@ -105,4 +259,19 @@ output "rds_address" {
 output "rds_master_user_secret_arn" {
   description = "Secrets Manager ARN holding the RDS master username/password JSON ({\"username\":..,\"password\":..}). Retrieve it with: aws secretsmanager get-secret-value --secret-id <this-arn>. In Phase 7 the backend Deployment/Secret can pull this via IRSA or an External Secrets Operator instead of a hardcoded K8s Secret."
   value       = module.rds.db_master_user_secret_arn
+}
+
+output "external_secrets_iam_role_arn" {
+  description = "IRSA role ARN for the external-secrets ServiceAccount - reference this in your SecretStore/ClusterSecretStore manifest if it needs to be specified explicitly"
+  value       = aws_iam_role.external_secrets.arn
+}
+
+output "argocd_initial_admin_password_command" {
+  description = "Run this after apply to retrieve the ArgoCD admin password"
+  value       = "kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
+}
+
+output "nginx_ingress_loadbalancer_command" {
+  description = "Run this to get the Ingress controller's external LB hostname once it's provisioned"
+  value       = "kubectl get svc -n nginx-ingress nginx-ingress-controller -w"
 }

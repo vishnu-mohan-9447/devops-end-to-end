@@ -127,31 +127,3 @@ variable "db_multi_az" {
   type        = bool
   default     = true
 }
-
-# ---------------- Helm addon chart versions ----------------
-# Pinned deliberately - verify still-current before applying with:
-#   helm search repo <repo>/<chart> --versions
-
-variable "argocd_chart_version" {
-  description = "argo-cd Helm chart version (argoproj/argo-helm)"
-  type        = string
-  default     = "10.1.2"
-}
-
-variable "nginx_ingress_chart_version" {
-  description = "F5 NGINX Ingress Controller (OSS) Helm chart version"
-  type        = string
-  default     = "2.6.1"
-}
-
-variable "cert_manager_chart_version" {
-  description = "cert-manager Helm chart version (jetstack/cert-manager)"
-  type        = string
-  default     = "1.20.0"
-}
-
-variable "external_secrets_chart_version" {
-  description = "external-secrets Helm chart version - NOT independently verified, check helm search repo external-secrets/external-secrets --versions before applying"
-  type        = string
-  default     = "0.10.7"
-}
