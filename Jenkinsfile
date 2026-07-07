@@ -27,7 +27,7 @@ pipeline {
         IMAGE_TAG           = "${env.BUILD_NUMBER}"
         APP_DIR             = 'Lms-App'
         PATH                = "${WORKSPACE}/bin:${env.PATH}"
-        ADMIN_EMAIL         = 'vishnu.mohan.9447@gmail.com'   // <-- change me
+        ADMIN_EMAIL         = 'linuxgeeknotes@gmail.com'   // <-- change me
     }
 
     stages {
