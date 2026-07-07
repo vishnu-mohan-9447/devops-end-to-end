@@ -28,6 +28,9 @@ pipeline {
         APP_DIR             = 'Lms-App'
         PATH                = "${WORKSPACE}/bin:${env.PATH}"
         ADMIN_EMAIL         = 'linuxgeeknotes@gmail.com'   // <-- change me
+        
+        GITOPS_REPO_URL = 'https://github.com/vishnu-mohan-9447/lms-gitops-source.git'
+        GITOPS_CREDENTIALS = 'github-pat' 
     }
 
     stages {
@@ -263,5 +266,64 @@ Check the console output for details: ${env.BUILD_URL}console
         }
         // Slack notifications and richer alerting (Prometheus/Alertmanager,
         // Grafana) land in Phase 9/10.
+    }
+}
+// ====================== CD STAGE ======================
+        stage('Update GitOps Repo') {
+            steps {
+                script {
+                    def gitOpsDir = 'gitops-repo'
+                    def newTag = IMAGE_TAG
+                    
+                    dir(gitOpsDir) {
+                        withCredentials([usernamePassword(credentialsId: "${GITOPS_CREDENTIALS}",
+                                                        usernameVariable: 'GIT_USER',
+                                                        passwordVariable: 'GIT_TOKEN')]) {
+                            
+                            sh '''
+                                git clone ${GITOPS_REPO_URL} .
+                                git config user.name "Jenkins CI"
+                                git config user.email "linuxgeeknotes@gmail.com"
+                                git checkout main
+                            '''
+                            
+                            // Update image tags (sed is safe because of the exact placeholder format)
+                            sh """
+                                sed -i 's|REPLACE_DOCKERHUB_NAMESPACE/lms-backend:REPLACE_IMAGE_TAG|${DOCKERHUB_NAMESPACE}/lms-backend:${newTag}|g' plain-manifests/backend-deployment.yaml
+                                sed -i 's|REPLACE_DOCKERHUB_NAMESPACE/lms-frontend:REPLACE_IMAGE_TAG|${DOCKERHUB_NAMESPACE}/lms-frontend:${newTag}|g' plain-manifests/frontend-deployment.yaml
+                            """
+                            
+                            sh '''
+                                git add plain-manifests/*.yaml
+                                git commit -m "Update images to tag ${newTag} (build #${BUILD_NUMBER})" || echo "No changes to commit"
+                                git push origin main
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            mail to: "${ADMIN_EMAIL}",
+                 subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER} - approved by ${env.APPROVER_ID ?: 'n/a'}",
+                 body: """\
+Build ${env.BUILD_NUMBER} of ${env.JOB_NAME} completed successfully.
+Production GitOps repo has been updated and ArgoCD should be syncing.
+View build: ${env.BUILD_URL}
+"""
+        }
+        failure {
+            mail to: "${ADMIN_EMAIL}",
+                 subject: "FAILURE: ${env.JOB_NAME} #${env.BUILD_NUMBER} - Pipeline failed",
+                 body: """\
+Build ${env.BUILD_NUMBER} of ${env.JOB_NAME} failed.
+Check the console output for details: ${env.BUILD_URL}console
+"""
+        }
     }
 }
