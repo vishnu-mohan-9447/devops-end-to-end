@@ -129,3 +129,9 @@ variable "endpoint_private_access" {
   type        = bool
   default     = true
 }
+
+variable "vpc_id" {
+  description = "VPC ID where the EKS cluster will be launched (optional, derived from subnets if not provided)"
+  type        = string
+  default     = ""
+}

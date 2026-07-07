@@ -8,14 +8,14 @@
 module "network" {
   source = "../modules/network"
 
-  name                  = "${var.project_name}-${var.environment}"
-  environment           = var.environment
-  vpc_cidr              = var.vpc_cidr
-  azs                   = var.azs
-  public_subnet_cidrs   = var.public_subnet_cidrs
-  private_subnet_cidrs  = var.private_subnet_cidrs
-  enable_nat_gateway    = true # required: private-subnet EKS nodes need egress to pull images
-  tags                  = var.tags
+  name                 = "${var.project_name}-${var.environment}"
+  environment          = var.environment
+  vpc_cidr             = var.vpc_cidr
+  azs                  = var.azs
+  public_subnet_cidrs  = var.public_subnet_cidrs
+  private_subnet_cidrs = var.private_subnet_cidrs
+  enable_nat_gateway   = true # required: private-subnet EKS nodes need egress to pull images
+  tags                 = var.tags
 }
 
 module "eks" {
@@ -25,6 +25,7 @@ module "eks" {
   name                = var.cluster_name
   environment         = var.environment
   subnet_ids          = module.network.private_subnet_ids
+  vpc_id              = module.network.vpc_id
   cluster_version     = var.cluster_version
   node_instance_types = var.node_instance_types
   node_desired_size   = var.node_desired_size
@@ -63,19 +64,19 @@ resource "aws_security_group" "rds" {
 module "rds" {
   source = "../modules/db"
 
-  identifier                   = "${var.project_name}-${var.environment}-db"
-  environment                  = var.environment
-  engine_version               = var.db_engine_version
-  instance_class               = var.db_instance_class
-  allocated_storage            = var.db_allocated_storage
-  db_name                      = var.db_name
-  username                     = var.db_username
-  manage_master_user_password  = true # AWS generates + stores the password in Secrets Manager
-  subnet_ids                   = module.network.private_subnet_ids
-  vpc_security_group_ids       = [aws_security_group.rds.id]
-  multi_az                     = var.db_multi_az
-  publicly_accessible          = false
-  tags                         = var.tags
+  identifier                  = "${var.project_name}-${var.environment}-db"
+  environment                 = var.environment
+  engine_version              = var.db_engine_version
+  instance_class              = var.db_instance_class
+  allocated_storage           = var.db_allocated_storage
+  db_name                     = var.db_name
+  username                    = var.db_username
+  manage_master_user_password = true # AWS generates + stores the password in Secrets Manager
+  subnet_ids                  = module.network.private_subnet_ids
+  vpc_security_group_ids      = [aws_security_group.rds.id]
+  multi_az                    = var.db_multi_az
+  publicly_accessible         = false
+  tags                        = var.tags
 }
 
 # ---------------- Root-level outputs ----------------
