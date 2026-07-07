@@ -80,6 +80,29 @@ module "rds" {
 }
 
 # ============================================================
+# JWT signing secret - referenced by lms-gitops-source's
+# external-secret.yaml (key: cloudcampus-lms/jwt-secret, property:
+# implicit "secret string"). Generated once here; External Secrets
+# Operator (IRSA role below) reads it into the lms-backend-secret K8s
+# Secret. Never handled as plaintext in git or Jenkins.
+# ============================================================
+
+resource "random_password" "jwt_secret" {
+  length  = 64
+  special = false # keep it simple to pass through env vars/JWT libraries without escaping issues
+}
+
+resource "aws_secretsmanager_secret" "jwt_secret" {
+  name = "cloudcampus-lms/jwt-secret"
+  tags = var.tags
+}
+
+resource "aws_secretsmanager_secret_version" "jwt_secret" {
+  secret_id     = aws_secretsmanager_secret.jwt_secret.id
+  secret_string = random_password.jwt_secret.result
+}
+
+# ============================================================
 # OIDC provider - required for IRSA (IAM Roles for Service Accounts).
 # Without this, pods have no way to assume IAM roles at all; they'd
 # either get no AWS permissions or (worse) inherit the node's own IAM

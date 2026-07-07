@@ -215,13 +215,17 @@ Full build details: ${env.BUILD_URL}
                                 git checkout main
                             """
                             
-                            // Update image tags
+                            // Update image tags - matches the image name (constant) and
+                            // replaces only the tag (variable), so this works on every
+                            // run regardless of whatever tag is currently deployed.
                             sh """
-                                sed -i 's|REPLACE_DOCKERHUB_NAMESPACE/lms-backend:REPLACE_IMAGE_TAG|${DOCKERHUB_NAMESPACE}/lms-backend:${newTag}|g' plain-manifests/backend-deployment.yaml
-                                sed -i 's|REPLACE_DOCKERHUB_NAMESPACE/lms-frontend:REPLACE_IMAGE_TAG|${DOCKERHUB_NAMESPACE}/lms-frontend:${newTag}|g' plain-manifests/frontend-deployment.yaml
+                                sed -i -E 's|(${DOCKERHUB_NAMESPACE}/lms-backend:)[^[:space:]]+|\\1${newTag}|' plain-manifests/backend-deployment.yaml
+                                sed -i -E 's|(${DOCKERHUB_NAMESPACE}/lms-frontend:)[^[:space:]]+|\\1${newTag}|' plain-manifests/frontend-deployment.yaml
                             """
                             
                             sh """
+                                echo "--- Image tag changes ---"
+                                git diff plain-manifests/*.yaml || true
                                 git add plain-manifests/*.yaml
                                 git commit -m "Update images to tag ${newTag} (build #${env.BUILD_NUMBER})" || echo "No changes to commit"
                                 git push origin main
