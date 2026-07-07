@@ -33,3 +33,8 @@ output "eks_node_role_arn" {
   description = "IAM role ARN used by the EKS worker nodes"
   value       = var.compute_type == "eks" ? aws_iam_role.eks_node[0].arn : null
 }
+
+output "eks_cluster_oidc_issuer" {
+  description = "OIDC issuer URL for the EKS cluster - needed to set up IRSA (IAM Roles for Service Accounts)"
+  value       = var.compute_type == "eks" ? aws_eks_cluster.this[0].identity[0].oidc[0].issuer : null
+}

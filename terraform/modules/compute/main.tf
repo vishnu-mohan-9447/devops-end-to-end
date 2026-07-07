@@ -1,157 +1,179 @@
 # ============================================================
-# Compute module
-# Provisions EITHER:
-#   - an EC2 instance (compute_type = "ec2")   -> used for the
-#     Jenkins/dev host in the test-dockercompose environment
-#   - an EKS cluster + managed node group (compute_type = "eks")
-#     -> used for the prod-eks environment
-# Only one branch is ever active per module call.
+# prod-eks root module
+# Provisions: VPC (public+private subnets, NAT), EKS cluster +
+# managed node group, and an RDS PostgreSQL instance for the
+# production environment.
 # ============================================================
 
-locals {
-  is_ec2 = var.compute_type == "ec2"
-  is_eks = var.compute_type == "eks"
+module "network" {
+  source = "../modules/network"
+
+  name                  = "${var.project_name}-${var.environment}"
+  environment           = var.environment
+  vpc_cidr              = var.vpc_cidr
+  azs                   = var.azs
+  public_subnet_cidrs   = var.public_subnet_cidrs
+  private_subnet_cidrs  = var.private_subnet_cidrs
+  enable_nat_gateway    = true # required: private-subnet EKS nodes need egress to pull images
+  tags                  = var.tags
 }
 
-# ---------------- EC2: Jenkins / dev host ----------------
+module "eks" {
+  source = "../modules/compute"
 
-resource "aws_instance" "this" {
-  count = local.is_ec2 ? 1 : 0
+  compute_type        = "eks"
+  name                = var.cluster_name
+  environment         = var.environment
+  subnet_ids          = module.network.private_subnet_ids
+  cluster_version     = var.cluster_version
+  node_instance_types = var.node_instance_types
+  node_desired_size   = var.node_desired_size
+  node_min_size       = var.node_min_size
+  node_max_size       = var.node_max_size
+  tags                = var.tags
+}
 
-  ami                         = var.ami_id
-  instance_type               = var.instance_type
-  subnet_id                   = var.subnet_id
-  vpc_security_group_ids      = var.security_group_ids
-  key_name                    = var.key_name
-  iam_instance_profile        = var.iam_instance_profile
-  associate_public_ip_address = true
-  user_data                   = var.user_data
+# RDS lives in the private subnets and only accepts traffic
+# from inside the VPC (i.e. from EKS pods/nodes).
+resource "aws_security_group" "rds" {
+  name        = "${var.project_name}-${var.environment}-rds-sg"
+  description = "Allow Postgres access from within the VPC only"
+  vpc_id      = module.network.vpc_id
 
-  root_block_device {
-    volume_size = var.root_volume_size
-    volume_type = "gp3"
-    encrypted   = true
+  ingress {
+    description = "Postgres from within the VPC"
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   tags = merge(var.tags, {
-    Name        = var.name
-    Environment = var.environment
+    Name = "${var.project_name}-${var.environment}-rds-sg"
   })
 }
 
-# ---------------- EKS: prod cluster ----------------
+module "rds" {
+  source = "../modules/db"
 
-resource "aws_iam_role" "eks_cluster" {
-  count = local.is_eks ? 1 : 0
-  name  = "${var.name}-cluster-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "eks.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-
-  tags = var.tags
+  identifier                   = "${var.project_name}-${var.environment}-db"
+  environment                  = var.environment
+  engine_version               = var.db_engine_version
+  instance_class               = var.db_instance_class
+  allocated_storage            = var.db_allocated_storage
+  db_name                      = var.db_name
+  username                     = var.db_username
+  manage_master_user_password  = true # AWS generates + stores the password in Secrets Manager
+  subnet_ids                   = module.network.private_subnet_ids
+  vpc_security_group_ids       = [aws_security_group.rds.id]
+  multi_az                     = var.db_multi_az
+  publicly_accessible          = false
+  tags                         = var.tags
 }
 
-resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
-  count      = local.is_eks ? 1 : 0
-  role       = aws_iam_role.eks_cluster[0].name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+# ---------------- Root-level outputs ----------------
+
+output "vpc_id" {
+  value = module.network.vpc_id
 }
 
-resource "aws_eks_cluster" "this" {
-  count    = local.is_eks ? 1 : 0
-  name     = var.name
-  role_arn = aws_iam_role.eks_cluster[0].arn
-  version  = var.cluster_version
+output "eks_cluster_name" {
+  value = module.eks.eks_cluster_name
+}
 
-  vpc_config {
-    subnet_ids              = var.subnet_ids
-    endpoint_public_access  = var.endpoint_public_access
-    endpoint_private_access = var.endpoint_private_access
+output "eks_cluster_endpoint" {
+  value = module.eks.eks_cluster_endpoint
+}
+
+output "rds_endpoint" {
+  value = module.rds.db_endpoint
+}
+
+output "rds_address" {
+  description = "RDS hostname to use as DB_HOST in the backend's environment/ConfigMap"
+  value       = module.rds.db_address
+}
+
+output "rds_master_user_secret_arn" {
+  description = "Secrets Manager ARN holding the RDS master username/password JSON ({\"username\":..,\"password\":..}). Retrieve it with: aws secretsmanager get-secret-value --secret-id <this-arn>. In Phase 7 the backend Deployment/Secret can pull this via IRSA or an External Secrets Operator instead of a hardcoded K8s Secret."
+  value       = module.rds.db_master_user_secret_arn
+}
+
+# ---------------- IRSA for External Secrets Operator ----------------
+# Lets the ESO pod in-cluster assume this IAM role (no static AWS keys
+# anywhere) to read secrets from Secrets Manager - specifically the RDS
+# master credentials, plus anything else under the cloudcampus-lms/ prefix
+# (e.g. a manually-created JWT secret).
+
+data "tls_certificate" "eks_oidc" {
+  url = module.eks.eks_cluster_oidc_issuer
+}
+
+resource "aws_iam_openid_connect_provider" "eks" {
+  url             = module.eks.eks_cluster_oidc_issuer
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.eks_oidc.certificates[0].sha1_fingerprint]
+  tags            = var.tags
+}
+
+data "aws_iam_policy_document" "eso_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:external-secrets:external-secrets"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
   }
-
-  tags = merge(var.tags, {
-    Environment = var.environment
-  })
-
-  depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
 }
 
-resource "aws_iam_role" "eks_node" {
-  count = local.is_eks ? 1 : 0
-  name  = "${var.name}-node-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "ec2.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-
-  tags = var.tags
+resource "aws_iam_role" "eso" {
+  name               = "${var.project_name}-${var.environment}-external-secrets"
+  assume_role_policy = data.aws_iam_policy_document.eso_trust.json
+  tags               = var.tags
 }
 
-resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
-  count      = local.is_eks ? 1 : 0
-  role       = aws_iam_role.eks_node[0].name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-}
-
-resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
-  count      = local.is_eks ? 1 : 0
-  role       = aws_iam_role.eks_node[0].name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-}
-
-resource "aws_iam_role_policy_attachment" "eks_ecr_readonly" {
-  count      = local.is_eks ? 1 : 0
-  role       = aws_iam_role.eks_node[0].name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-}
-
-# Lets you troubleshoot worker nodes via `aws ssm start-session` instead
-# of SSH - no key pair, no open port 22, no bastion host. The EKS
-# optimized AMI ships with the SSM agent pre-installed; this policy is
-# the only piece needed to let it register with Systems Manager.
-resource "aws_iam_role_policy_attachment" "eks_ssm_core" {
-  count      = local.is_eks ? 1 : 0
-  role       = aws_iam_role.eks_node[0].name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-resource "aws_eks_node_group" "this" {
-  count           = local.is_eks ? 1 : 0
-  cluster_name    = aws_eks_cluster.this[0].name
-  node_group_name = "${var.name}-node-group"
-  node_role_arn   = aws_iam_role.eks_node[0].arn
-  subnet_ids      = var.subnet_ids
-  instance_types  = var.node_instance_types
-  disk_size       = var.node_disk_size
-
-  scaling_config {
-    desired_size = var.node_desired_size
-    min_size     = var.node_min_size
-    max_size     = var.node_max_size
+data "aws_iam_policy_document" "eso_secrets_access" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = [
+      module.rds.db_master_user_secret_arn,
+      "arn:aws:secretsmanager:${var.aws_region}:*:secret:${var.project_name}/*",
+    ]
   }
+}
 
-  update_config {
-    max_unavailable = 1
-  }
+resource "aws_iam_role_policy" "eso_secrets_access" {
+  name   = "${var.project_name}-${var.environment}-eso-secrets-access"
+  role   = aws_iam_role.eso.id
+  policy = data.aws_iam_policy_document.eso_secrets_access.json
+}
 
-  tags = merge(var.tags, {
-    Environment = var.environment
-  })
-
-  depends_on = [
-    aws_iam_role_policy_attachment.eks_worker_node_policy,
-    aws_iam_role_policy_attachment.eks_cni_policy,
-    aws_iam_role_policy_attachment.eks_ecr_readonly,
-  ]
+output "eso_iam_role_arn" {
+  description = "IAM role ARN for the External Secrets Operator's ServiceAccount (IRSA annotation)"
+  value       = aws_iam_role.eso.arn
 }

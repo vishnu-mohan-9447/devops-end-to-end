@@ -1,5 +1,5 @@
 // ============================================================
-// Cokonet LMS 
+// Cokonet LMS - Phase 4 CI Pipeline
 // Checkout -> Build -> Unit Tests -> SonarQube -> Quality Gate
 // -> Trivy FS Scan -> Docker Build -> Trivy Image Scan -> Push
 // ============================================================
@@ -27,7 +27,6 @@ pipeline {
         IMAGE_TAG           = "${env.BUILD_NUMBER}"
         APP_DIR             = 'Lms-App'
         PATH                = "${WORKSPACE}/bin:${env.PATH}"
-        ADMIN_EMAIL         = 'admin@example.com'   // <-- change me
     }
 
     stages {
@@ -107,12 +106,7 @@ pipeline {
 //        stage('Quality Gate') {
 //            steps {
 //                timeout(time: 10, unit: 'MINUTES') {
-//                    // TEMPORARY for testing: abortPipeline set to false so a failing
-                    // gate doesn't stop the pipeline. Sonar result still shows in
-                    // Jenkins and the SonarQube dashboard either way.
-                    // Revert to abortPipeline: true once tests/coverage are wired
-                    // up and the gate should actually enforce quality.
-//                    waitForQualityGate abortPipeline: false
+//                    waitForQualityGate abortPipeline: false 
 //                }
 //            }
 //        }
@@ -136,7 +130,7 @@ pipeline {
                 script {
                     services.each { svc ->
                         sh """
-                            docker build -t ${DOCKERHUB_NAMESPACE}/lms-${svc}:${IMAGE_TAG} \
+                            docker build --pull -t ${DOCKERHUB_NAMESPACE}/lms-${svc}:${IMAGE_TAG} \
                                          -t ${DOCKERHUB_NAMESPACE}/lms-${svc}:latest \
                                          ${APP_DIR}/${svc}
                         """
@@ -179,59 +173,39 @@ pipeline {
             }
         }
 
-        stage('Deploy to Development') {
-            // Jenkins and the dev Docker Compose stack live on the same
-            // host, so this is a local docker compose call - no SSH/remote
-            // deploy complexity needed. docker-compose.dev.yml is expected
-            // to reference images (not build: contexts) so it pulls the
-            // freshly pushed tags rather than rebuilding locally.
+        // ---------------- Phase 5 ----------------
+        stage('Deploy to Dev') {
             steps {
                 dir("${APP_DIR}") {
-                    sh 'docker compose -f docker-compose.dev.yml pull'
-                    sh 'docker compose -f docker-compose.dev.yml up -d'
-                    sh '''
-                        echo "Waiting for backend health check..."
-                        for i in $(seq 1 12); do
-                            if curl -sf http://localhost:5000/health > /dev/null; then
-                                echo "Backend is healthy"
-                                exit 0
-                            fi
-                            sleep 5
-                        done
-                        echo "Backend did not become healthy in time"
-                        exit 1
-                    '''
+                    sh """
+                        cat > .env.dev <<EOF
+DOCKERHUB_NAMESPACE=${DOCKERHUB_NAMESPACE}
+IMAGE_TAG=${IMAGE_TAG}
+EOF
+                        docker compose -f docker-compose.dev.yml --env-file .env.dev pull
+                        docker compose -f docker-compose.dev.yml --env-file .env.dev up -d
+                    """
                 }
             }
         }
 
-        stage('Manual Approval') {
+        stage('Dev Smoke Check') {
+            // A minimal check just to catch an obviously broken deploy now;
+            // Phase 8 will replace/extend this with a proper readiness-probe
+            // and health-endpoint verification stage.
             steps {
-                script {
-                    mail to: "${ADMIN_EMAIL}",
-                         subject: "ACTION NEEDED: Approve production deploy for ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                         body: """\
-Dev deployment for ${env.JOB_NAME} #${env.BUILD_NUMBER} is up and its health check passed.
-
-Review and approve/reject promotion to production (expires in 1 hour if no response):
-${env.BUILD_URL}input/
-
-Full build details: ${env.BUILD_URL}
-"""
-
-                    try {
-                        timeout(time: 1, unit: 'HOURS') {
-                            input message: 'Dev deployment verified. Approve promotion to production?',
-                                  ok: 'Approve',
-                                  submitterParameter: 'APPROVER_ID'
-                                  // submitter: 'admin'   // <-- uncomment and set a Jenkins username/group to restrict who can approve
-                        }
-                    } catch (err) {
-                        error("Production promotion was rejected or timed out (no response within 1 hour).")
-                    }
-
-                    echo "Production promotion approved by: ${env.APPROVER_ID}"
-                }
+                sh '''
+                    for i in $(seq 1 10); do
+                        if curl -sf http://localhost:5000/health > /dev/null; then
+                            echo "Backend healthy"
+                            exit 0
+                        fi
+                        echo "Waiting for backend to become healthy..."
+                        sleep 5
+                    done
+                    echo "Backend did not become healthy in time"
+                    exit 1
+                '''
             }
         }
     }
@@ -240,28 +214,6 @@ Full build details: ${env.BUILD_URL}
         always {
             cleanWs()
         }
-        success {
-            mail to: "${ADMIN_EMAIL}",
-                 subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER} - approved by ${env.APPROVER_ID ?: 'n/a'}",
-                 body: """\
-Build ${env.BUILD_NUMBER} of ${env.JOB_NAME} completed successfully.
-
-The dev Docker Compose deployment is up and its backend health check passed.
-Production promotion was approved by: ${env.APPROVER_ID ?: 'n/a'}
-
-View build: ${env.BUILD_URL}
-"""
-        }
-        failure {
-            mail to: "${ADMIN_EMAIL}",
-                 subject: "FAILURE: ${env.JOB_NAME} #${env.BUILD_NUMBER} - Pipeline failed",
-                 body: """\
-Build ${env.BUILD_NUMBER} of ${env.JOB_NAME} failed.
-
-Check the console output for details: ${env.BUILD_URL}console
-"""
-        }
-        // Slack notifications and richer alerting (Prometheus/Alertmanager,
-        // Grafana) land in Phase 9/10.
+        // Slack/email notifications land in Phase 10 (Alerting)
     }
 }
