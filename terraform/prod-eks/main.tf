@@ -99,9 +99,11 @@ resource "aws_iam_openid_connect_provider" "eks" {
 }
 
 # ============================================================
-# IRSA role for external-secrets - scoped ONLY to the one RDS secret
-# it actually needs to read, not blanket secretsmanager:* access.
+# IRSA role for external-secrets - scoped to the secrets this app
+# actually needs to read from Secrets Manager.
 # ============================================================
+
+data "aws_caller_identity" "current" {}
 
 data "aws_iam_policy_document" "external_secrets_assume_role" {
   statement {
@@ -140,9 +142,10 @@ data "aws_iam_policy_document" "external_secrets_permissions" {
   statement {
     effect  = "Allow"
     actions = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-    # Scoped to only the RDS master-user secret this project needs -
-    # add more resource ARNs here if you fetch other secrets later.
-    resources = [module.rds.db_master_user_secret_arn]
+    resources = [
+      module.rds.db_master_user_secret_arn,
+      "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:cloudcampus-lms/jwt-secret*"
+    ]
   }
 }
 
