@@ -155,3 +155,8 @@ variable "external_secrets_chart_version" {
   type        = string
   default     = "0.10.7"
 }
+variable "metrics_server_chart_version" {
+  description = "metrics-server Helm chart version (kubernetes-sigs/metrics-server) - required for HPA to read CPU/memory metrics"
+  type        = string
+  default     = "3.13.1"
+}

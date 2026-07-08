@@ -259,6 +259,20 @@ resource "helm_release" "external_secrets" {
   depends_on = [module.eks, aws_iam_role_policy.external_secrets]
 }
 
+
+resource "helm_release" "metrics_server" {
+  name             = "metrics-server"
+  repository       = "https://kubernetes-sigs.github.io/metrics-server/"
+  chart            = "metrics-server"
+  version          = var.metrics_server_chart_version
+  namespace        = "kube-system"
+  create_namespace = false
+
+  # No IRSA needed - metrics-server only talks to the kubelet API on each
+  # node, not any AWS service.
+
+  depends_on = [module.eks]
+}
 # ---------------- Root-level outputs ----------------
 
 output "vpc_id" {
