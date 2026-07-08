@@ -35,8 +35,13 @@ resource "aws_db_instance" "this" {
   # as plaintext, never appears in .tfvars or CLI history). Set
   # manage_master_user_password = false and supply var.password only if
   # you have a specific reason to self-manage it.
-  manage_master_user_password = var.manage_master_user_password
-  password                    = var.manage_master_user_password ? null : var.password
+  # manage_master_user_password must be true or null here, never a literal
+  # false - the AWS provider's schema treats any explicitly-assigned value
+  # (including false) as "configured" and conflicts with `password`, even
+  # though logically only one should be active. null (omitted) is the only
+  # value that actually satisfies ConflictsWith when self-managing.
+  manage_master_user_password   = var.manage_master_user_password ? true : null
+  password                      = var.manage_master_user_password ? null : var.password
   master_user_secret_kms_key_id = var.manage_master_user_password ? var.master_user_secret_kms_key_id : null
 
   db_subnet_group_name   = aws_db_subnet_group.this.name
