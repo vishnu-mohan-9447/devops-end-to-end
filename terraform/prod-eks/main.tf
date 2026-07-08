@@ -71,7 +71,8 @@ module "rds" {
   allocated_storage           = var.db_allocated_storage
   db_name                     = var.db_name
   username                    = var.db_username
-  manage_master_user_password = true # AWS generates + stores the password in Secrets Manager
+  manage_master_user_password = false # self-managed below - AWS's own auto-generated secret gets a brand new UUID name on every recreation, which is exactly the instability we're avoiding
+  password                    = random_password.rds_master.result
   subnet_ids                  = module.network.private_subnet_ids
   vpc_security_group_ids      = [aws_security_group.rds.id]
   multi_az                    = var.db_multi_az
@@ -88,24 +89,54 @@ module "rds" {
 # ============================================================
 
 # Generates a short random string to append to the secret name
-resource "random_id" "secret_suffix" {
-  byte_length = 4
-}
-
 resource "random_password" "jwt_secret" {
   length  = 64
   special = false # keep it simple to pass through env vars/JWT libraries without escaping issues
-} 
-  
+}
+
 resource "aws_secretsmanager_secret" "jwt_secret" {
-  # Appends the random hex to the name to guarantee uniqueness on recreation
-  name = "cloudcampus-lms/jwt-secret-${random_id.secret_suffix.hex}"
-  tags = var.tags     
-} 
-  
+  name = "cloudcampus-lms/jwt-secret"
+  tags = var.tags
+
+  # recovery_window_in_days = 0 means AWS deletes this immediately when
+  # Terraform destroys it, instead of soft-deleting with a 30-day recovery
+  # window. Without this, `terraform destroy` followed by a fresh `apply`
+  # (exactly the workflow this project uses) fails with "already scheduled
+  # for deletion" trying to recreate a secret with the same name. Fine to
+  # skip the recovery window here since this value is trivially
+  # regeneratable - not appropriate for a secret protecting irreplaceable
+  # data.
+  recovery_window_in_days = 0
+}
+
 resource "aws_secretsmanager_secret_version" "jwt_secret" {
   secret_id     = aws_secretsmanager_secret.jwt_secret.id
   secret_string = random_password.jwt_secret.result
+}
+
+# ============================================================
+# RDS master password - Terraform-managed (not AWS's auto-generated
+# manage_master_user_password secret, which gets a brand new UUID name
+# every time the RDS instance is recreated - see the note on
+# module.rds.manage_master_user_password above). This one keeps a stable,
+# predictable name across recreations, so lms-gitops-source's
+# external-secret.yaml never needs manual updates after a rebuild.
+# ============================================================
+
+resource "random_password" "rds_master" {
+  length  = 32
+  special = false # avoid characters that need escaping in connection strings
+}
+
+resource "aws_secretsmanager_secret" "rds_master_password" {
+  name                     = "cloudcampus-lms/rds-master-password"
+  tags                     = var.tags
+  recovery_window_in_days  = 0
+}
+
+resource "aws_secretsmanager_secret_version" "rds_master_password" {
+  secret_id     = aws_secretsmanager_secret.rds_master_password.id
+  secret_string = random_password.rds_master.result
 }
 
 # ============================================================
@@ -172,8 +203,11 @@ data "aws_iam_policy_document" "external_secrets_permissions" {
     effect  = "Allow"
     actions = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
     resources = [
-      module.rds.db_master_user_secret_arn,
-      "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:cloudcampus-lms/jwt-secret*"
+      # Broad prefix instead of listing individual secret ARNs - covers
+      # jwt-secret, rds-master-password, and anything else added under
+      # this project's naming convention going forward, without ever
+      # needing an IAM policy update again.
+      "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:cloudcampus-lms/*"
     ]
   }
 }
@@ -338,8 +372,8 @@ output "rds_address" {
 }
 
 output "rds_master_user_secret_arn" {
-  description = "Secrets Manager ARN holding the RDS master username/password JSON ({\"username\":..,\"password\":..}). Retrieve it with: aws secretsmanager get-secret-value --secret-id <this-arn>. In Phase 7 the backend Deployment/Secret can pull this via IRSA or an External Secrets Operator instead of a hardcoded K8s Secret."
-  value       = module.rds.db_master_user_secret_arn
+  description = "Secrets Manager ARN holding the RDS master password (plain string, not JSON - see random_password.rds_master). Stable name across recreations: cloudcampus-lms/rds-master-password."
+  value       = aws_secretsmanager_secret.rds_master_password.arn
 }
 
 output "external_secrets_iam_role_arn" {
