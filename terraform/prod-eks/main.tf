@@ -204,6 +204,41 @@ resource "helm_release" "argocd" {
     value = "ClusterIP" # exposed via the Ingress controller below, not a separate LB
   }
 
+  # Without this, ArgoCD has no built-in health check for the
+  # external-secrets.io CRDs and treats any ExternalSecret as "Healthy"
+  # the instant it's created - even though the actual Kubernetes Secret it
+  # produces is created asynchronously, a moment later, by the ESO
+  # controller. That gap is exactly what caused the migration Job (a
+  # PreSync hook that depends on that Secret) to race ahead and fail
+  # intermittently. This teaches ArgoCD to only report Healthy once the
+  # ExternalSecret's own "Ready" condition is actually True, so hook-wave
+  # ordering genuinely waits for it rather than just hoping the timing
+  # works out.
+  set {
+    name  = "configs.cm.resource\\.customizations\\.health\\.external-secrets\\.io_ExternalSecret"
+    value = <<-LUA
+      hs = {}
+      if obj.status ~= nil and obj.status.conditions ~= nil then
+        for i, condition in ipairs(obj.status.conditions) do
+          if condition.type == "Ready" then
+            if condition.status == "True" then
+              hs.status = "Healthy"
+              hs.message = condition.message
+              return hs
+            else
+              hs.status = "Progressing"
+              hs.message = condition.message
+              return hs
+            end
+          end
+        end
+      end
+      hs.status = "Progressing"
+      hs.message = "Waiting for ExternalSecret to report a Ready condition"
+      return hs
+    LUA
+  }
+
   depends_on = [module.eks]
 }
 
