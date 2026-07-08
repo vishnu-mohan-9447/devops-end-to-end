@@ -129,9 +129,9 @@ resource "random_password" "rds_master" {
 }
 
 resource "aws_secretsmanager_secret" "rds_master_password" {
-  name                     = "cloudcampus-lms/rds-master-password"
-  tags                     = var.tags
-  recovery_window_in_days  = 0
+  name                    = "cloudcampus-lms/rds-master-password"
+  tags                    = var.tags
+  recovery_window_in_days = 0
 }
 
 resource "aws_secretsmanager_secret_version" "rds_master_password" {
@@ -248,30 +248,44 @@ resource "helm_release" "argocd" {
   # ExternalSecret's own "Ready" condition is actually True, so hook-wave
   # ordering genuinely waits for it rather than just hoping the timing
   # works out.
-  set {
-    name  = "configs.cm.resource\\.customizations\\.health\\.external-secrets\\.io_ExternalSecret"
-    value = <<-LUA
-      hs = {}
-      if obj.status ~= nil and obj.status.conditions ~= nil then
-        for i, condition in ipairs(obj.status.conditions) do
-          if condition.type == "Ready" then
-            if condition.status == "True" then
-              hs.status = "Healthy"
-              hs.message = condition.message
-              return hs
-            else
-              hs.status = "Progressing"
-              hs.message = condition.message
-              return hs
+  #
+  # FIXED: this MUST be delivered via `values` (raw YAML, passed to helm as
+  # -f), NOT via a `set` block. Helm's `--set` mini-language (strvals) treats
+  # literal `{` and `}` characters as list/map syntax - and this Lua script
+  # is full of literal braces (`hs = {}`, `if ... end`, etc). Passing it
+  # through `set` silently mangled the string, and ArgoCD then failed to
+  # evaluate ExternalSecret health with `<string> at EOF: syntax error` -
+  # which looked like an ExternalSecret/ESO problem but was actually just
+  # this delivery mechanism being wrong all along.
+  values = [
+    yamlencode({
+      configs = {
+        cm = {
+          "resource.customizations.health.external-secrets.io_ExternalSecret" = <<-LUA
+            hs = {}
+            if obj.status ~= nil and obj.status.conditions ~= nil then
+              for i, condition in ipairs(obj.status.conditions) do
+                if condition.type == "Ready" then
+                  if condition.status == "True" then
+                    hs.status = "Healthy"
+                    hs.message = condition.message
+                    return hs
+                  else
+                    hs.status = "Progressing"
+                    hs.message = condition.message
+                    return hs
+                  end
+                end
+              end
             end
-          end
-        end
-      end
-      hs.status = "Progressing"
-      hs.message = "Waiting for ExternalSecret to report a Ready condition"
-      return hs
-    LUA
-  }
+            hs.status = "Progressing"
+            hs.message = "Waiting for ExternalSecret to report a Ready condition"
+            return hs
+          LUA
+        }
+      }
+    })
+  ]
 
   depends_on = [module.eks]
 }

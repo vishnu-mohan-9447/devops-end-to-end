@@ -1,8 +1,26 @@
 # Routes external traffic through the same nginx-ingress controller to the
-# ArgoCD API/UI service. argocd-server speaks HTTPS internally by default
-# (it terminates its own TLS even for plain HTTP requests it receives), so
-# the backend-protocol annotation tells nginx to talk HTTPS to it rather
-# than plain HTTP - without this you'll get a "broken pipe"/blank response.
+# ArgoCD API/UI service.
+#
+# argocd-server now runs with --insecure (set via helm_release.argocd's
+# configs.params."server.insecure" in main.tf), so it serves plain HTTP
+# internally and no longer tries to enforce its own HTTPS redirect. TLS is
+# terminated exactly once, here at the ingress, using the self-signed cert
+# in argocd-server-tls. backend-protocol is therefore "HTTP", not "HTTPS" -
+# double-terminating TLS (ingress -> re-encrypt -> argocd-server's own TLS)
+# is what caused an infinite redirect loop before, since argocd-server
+# couldn't reliably tell the original request had already been HTTPS.
+#
+# TLS secret setup (self-signed, since argocd.cokonet.local isn't a real
+# public domain):
+#   openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+#     -keyout /tmp/argocd.key -out /tmp/argocd.crt \
+#     -subj "/CN=argocd.cokonet.local" \
+#     -addext "subjectAltName=DNS:argocd.cokonet.local"
+#   kubectl create secret tls argocd-server-tls -n argocd \
+#     --cert=/tmp/argocd.crt --key=/tmp/argocd.key
+#
+# Browsers will still show a self-signed-cert warning - click through it,
+# that's expected for an internal placeholder domain like this.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -10,10 +28,14 @@ metadata:
   namespace: argocd
   annotations:
     kubernetes.io/ingress.class: "nginx"
-    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
     nginx.ingress.kubernetes.io/ssl-passthrough: "false"
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - argocd.cokonet.local
+      secretName: argocd-server-tls
   rules:
     - host: argocd.cokonet.local   # placeholder - swap for your real domain once you have one
       http:
@@ -24,4 +46,4 @@ spec:
               service:
                 name: argocd-server
                 port:
-                  number: 443
+                  number: 80

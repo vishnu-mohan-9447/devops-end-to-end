@@ -1,0 +1,50 @@
+# Routes external traffic through the same nginx-ingress controller to the
+# ArgoCD API/UI service. argocd-server speaks HTTPS internally by default
+# (it terminates its own TLS even for plain HTTP requests it receives), so
+# the backend-protocol annotation tells nginx to talk HTTPS to it rather
+# than plain HTTP - without this you'll get a "broken pipe"/blank response.
+#
+# The `tls:` block below is required for client-facing HTTPS to work at all.
+# Without it, nginx-ingress has no TLS server block configured for this
+# hostname's SNI, and any HTTPS client connecting to it gets a hard TLS
+# handshake failure (`SSL routines::tlsv1 unrecognized name`) rather than a
+# normal HTTP response - it's not optional, even for a placeholder domain.
+#
+# Since argocd.cokonet.local isn't a real public domain, this uses a
+# self-signed cert stored in the `argocd-server-tls` Secret. Create it once
+# with:
+#   openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+#     -keyout /tmp/argocd.key -out /tmp/argocd.crt \
+#     -subj "/CN=argocd.cokonet.local" \
+#     -addext "subjectAltName=DNS:argocd.cokonet.local"
+#   kubectl create secret tls argocd-server-tls -n argocd \
+#     --cert=/tmp/argocd.crt --key=/tmp/argocd.key
+#
+# Clients still need -k / "accept the warning" in a browser, since it's
+# self-signed - that's expected and fine for an internal placeholder domain.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-server
+  namespace: argocd
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/ssl-passthrough: "false"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - argocd.cokonet.local
+      secretName: argocd-server-tls
+  rules:
+    - host: argocd.cokonet.local   # placeholder - swap for your real domain once you have one
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 443

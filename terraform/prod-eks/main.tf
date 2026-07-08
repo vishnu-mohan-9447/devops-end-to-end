@@ -129,9 +129,9 @@ resource "random_password" "rds_master" {
 }
 
 resource "aws_secretsmanager_secret" "rds_master_password" {
-  name                    = "cloudcampus-lms/rds-master-password"
-  tags                    = var.tags
-  recovery_window_in_days = 0
+  name                     = "cloudcampus-lms/rds-master-password"
+  tags                     = var.tags
+  recovery_window_in_days  = 0
 }
 
 resource "aws_secretsmanager_secret_version" "rds_master_password" {
@@ -238,6 +238,23 @@ resource "helm_release" "argocd" {
     value = "ClusterIP" # exposed via the Ingress controller below, not a separate LB
   }
 
+  # ArgoCD's own server enforces an HTTP->HTTPS redirect by default, based on
+  # whether it thinks the original client request was over TLS (it checks
+  # X-Forwarded-Proto). Behind nginx-ingress with TLS terminated at the
+  # ingress and then re-encrypted to argocd-server (backend-protocol HTTPS),
+  # that signal gets lost, and argocd-server keeps redirecting to HTTPS
+  # forever - an infinite redirect loop in the browser
+  # ("ERR_TOO_MANY_REDIRECTS" / "isn't redirecting properly"). Running
+  # argocd-server in --insecure mode stops it from doing this: TLS is
+  # terminated exactly once, at the ingress, and argocd-server just serves
+  # plain HTTP internally. This is ArgoCD's own documented recommendation
+  # for ingress-nginx. Pair this with backend-protocol: "HTTP" (not HTTPS)
+  # on the argocd-server Ingress.
+  set {
+    name  = "configs.params.server\\.insecure"
+    value = "true"
+  }
+
   # Without this, ArgoCD has no built-in health check for the
   # external-secrets.io CRDs and treats any ExternalSecret as "Healthy"
   # the instant it's created - even though the actual Kubernetes Secret it
@@ -248,15 +265,13 @@ resource "helm_release" "argocd" {
   # ExternalSecret's own "Ready" condition is actually True, so hook-wave
   # ordering genuinely waits for it rather than just hoping the timing
   # works out.
-  #
-  # FIXED: this MUST be delivered via `values` (raw YAML, passed to helm as
-  # -f), NOT via a `set` block. Helm's `--set` mini-language (strvals) treats
-  # literal `{` and `}` characters as list/map syntax - and this Lua script
-  # is full of literal braces (`hs = {}`, `if ... end`, etc). Passing it
-  # through `set` silently mangled the string, and ArgoCD then failed to
-  # evaluate ExternalSecret health with `<string> at EOF: syntax error` -
-  # which looked like an ExternalSecret/ESO problem but was actually just
-  # this delivery mechanism being wrong all along.
+  # IMPORTANT: this must be set via `values` (raw YAML passed to helm as -f),
+  # NOT via a `set` block. Helm's `--set` mini-language (strvals) treats `{`
+  # and `}` as list/map syntax - and this Lua script is full of literal braces
+  # (`hs = {}`, `if ... end`, etc). Passing it through `set` silently mangles
+  # the string, and ArgoCD later fails to parse the corrupted result with
+  # `<string> at EOF: syntax error` - which looks like an ExternalSecret/ESO
+  # problem but is actually just this delivery mechanism being wrong.
   values = [
     yamlencode({
       configs = {
