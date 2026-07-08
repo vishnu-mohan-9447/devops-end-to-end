@@ -1,0 +1,27 @@
+# Routes external traffic through the same nginx-ingress controller to the
+# ArgoCD API/UI service. argocd-server speaks HTTPS internally by default
+# (it terminates its own TLS even for plain HTTP requests it receives), so
+# the backend-protocol annotation tells nginx to talk HTTPS to it rather
+# than plain HTTP - without this you'll get a "broken pipe"/blank response.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-server
+  namespace: argocd
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/ssl-passthrough: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: argocd.cokonet.local   # placeholder - swap for your real domain once you have one
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 443
