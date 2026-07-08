@@ -87,16 +87,22 @@ module "rds" {
 # Secret. Never handled as plaintext in git or Jenkins.
 # ============================================================
 
+# Generates a short random string to append to the secret name
+resource "random_id" "secret_suffix" {
+  byte_length = 4
+}
+
 resource "random_password" "jwt_secret" {
   length  = 64
   special = false # keep it simple to pass through env vars/JWT libraries without escaping issues
-}
-
+} 
+  
 resource "aws_secretsmanager_secret" "jwt_secret" {
-  name = "cloudcampus-lms/jwt-secret"
-  tags = var.tags
-}
-
+  # Appends the random hex to the name to guarantee uniqueness on recreation
+  name = "cloudcampus-lms/jwt-secret-${random_id.secret_suffix.hex}"
+  tags = var.tags     
+} 
+  
 resource "aws_secretsmanager_secret_version" "jwt_secret" {
   secret_id     = aws_secretsmanager_secret.jwt_secret.id
   secret_string = random_password.jwt_secret.result
