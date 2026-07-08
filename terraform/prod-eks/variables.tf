@@ -153,7 +153,7 @@ variable "cert_manager_chart_version" {
 variable "external_secrets_chart_version" {
   description = "external-secrets Helm chart version - NOT independently verified, check helm search repo external-secrets/external-secrets --versions before applying"
   type        = string
-  default     = "0.10.7"
+  default     = "2.7.0"
 }
 variable "metrics_server_chart_version" {
   description = "metrics-server Helm chart version (kubernetes-sigs/metrics-server) - required for HPA to read CPU/memory metrics"
