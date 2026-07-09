@@ -160,11 +160,3 @@ variable "metrics_server_chart_version" {
   type        = string
   default     = "3.13.1"
 }
-
-# ---------------- EKS addons ----------------
-
-variable "ebs_csi_addon_version" {
-  description = "aws-ebs-csi-driver EKS addon version. Leave null to let AWS pick the recommended default version for the cluster's Kubernetes version - safer than pinning and forgetting to bump it."
-  type        = string
-  default     = null
-}

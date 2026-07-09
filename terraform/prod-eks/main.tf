@@ -159,9 +159,91 @@ resource "aws_iam_openid_connect_provider" "eks" {
 }
 
 # ============================================================
+# EBS CSI driver - required for ANY PersistentVolumeClaim on this
+# cluster (Prometheus TSDB, Alertmanager data, Grafana db, Loki chunks,
+# etc). Without this, PVCs sit Pending forever with
+# "pod has unbound immediate PersistentVolumeClaims" - there's no
+# in-tree AWS EBS provisioner anymore on Kubernetes this recent, so the
+# CSI addon is mandatory, not optional, the moment anything wants
+# persistent storage.
+# ============================================================
+
+data "aws_iam_policy_document" "ebs_csi_assume_role" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ebs_csi" {
+  name               = "${var.project_name}-${var.environment}-ebs-csi"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_assume_role.json
+  tags               = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi" {
+  role       = aws_iam_role.ebs_csi.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+resource "aws_eks_addon" "ebs_csi" {
+  cluster_name  = module.eks.eks_cluster_name
+  addon_name    = "aws-ebs-csi-driver"
+  addon_version = var.ebs_csi_addon_version # null = let AWS pick the recommended version for this cluster's k8s version
+
+  service_account_role_arn   = aws_iam_role.ebs_csi.arn
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  depends_on = [module.eks, aws_iam_role_policy_attachment.ebs_csi]
+}
+
+# Default StorageClass - without one, PVCs that don't set an explicit
+# storageClassName (which is most Helm charts' default expectation) have
+# nothing to bind to even after the CSI driver above is installed.
+# gp3 over gp2: cheaper and faster at the same size, no reason to use gp2
+# on a new cluster.
+resource "kubernetes_storage_class_v1" "gp3" {
+  metadata {
+    name = "gp3"
+    annotations = {
+      "storageclass.kubernetes.io/is-default-class" = "true"
+    }
+  }
+
+  storage_provisioner    = "ebs.csi.aws.com"
+  reclaim_policy         = "Delete"
+  volume_binding_mode    = "WaitForFirstConsumer" # waits until a pod is actually scheduled, so the volume lands in the right AZ
+  allow_volume_expansion = true
+
+  parameters = {
+    type = "gp3"
+  }
+
+  depends_on = [aws_eks_addon.ebs_csi]
+}
+
+# ============================================================
 # IRSA role for external-secrets - scoped to the secrets this app
 # actually needs to read from Secrets Manager.
 # ============================================================
+
 
 data "aws_caller_identity" "current" {}
 
