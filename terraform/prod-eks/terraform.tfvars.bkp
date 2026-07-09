@@ -1,0 +1,32 @@
+aws_region   = "us-east-1"
+project_name = "cloudcampus-lms"
+environment  = "prod"
+
+vpc_cidr             = "10.10.0.0/16"
+azs                  = ["us-east-1a", "us-east-1b"]
+public_subnet_cidrs  = ["10.10.0.0/24", "10.10.1.0/24"]
+private_subnet_cidrs = ["10.10.10.0/24", "10.10.11.0/24"]
+
+cluster_name        = "cloudcampus-lms-prod"
+cluster_version     = "1.35"
+node_instance_types = ["t3.medium"]
+node_desired_size   = 4 
+node_min_size       = 2 
+node_max_size       = 4
+
+db_engine_version    = "16.3"
+db_instance_class    = "db.t3.micro"
+db_allocated_storage = 20
+db_name              = "lms_db"
+db_username          = "lms_user"
+# No db_password here - AWS Secrets Manager generates and stores the
+# master password automatically (manage_master_user_password = true
+# in modules/db). Retrieve it after apply via:
+#   aws secretsmanager get-secret-value --secret-id <rds_master_user_secret_arn output>
+db_multi_az = true
+
+tags = {
+  Project     = "cloudcampus-lms"
+  Environment = "prod"
+  ManagedBy   = "terraform"
+}
